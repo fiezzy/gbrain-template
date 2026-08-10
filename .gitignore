@@ -1,0 +1,11 @@
+# Derived state. All of it is rebuildable from git + sources.manifest, and none
+# of it should ever be committed: the clones are copies of other repositories,
+# the database is a cache, and the config directory holds the DB password.
+sources/
+db/
+backups/
+.gbrain/
+models/
+
+*.log
+.DS_Store

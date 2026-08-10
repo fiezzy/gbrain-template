@@ -1,0 +1,79 @@
+# Local rehearsal of the server stack. Same images, same scripts, same code
+# paths — minus the two things that need a real domain.
+#
+#   cd deploy
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml \
+#     --profile tools run --rm bootstrap
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml \
+#     --profile tools run --rm refresh
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db gbrain
+#
+#   open http://localhost:3131/admin
+#
+# Name db and gbrain explicitly on `up`: caddy stays out of it, because it
+# would try to obtain a certificate for a domain that does not resolve here and
+# would keep restarting.
+#
+# Three levels of fidelity, in increasing order:
+#
+#   1. local embedder (Ollama on your host, free)
+#      Exercises every moving part except TLS and the embedding provider.
+#      Note the database is NOT interchangeable with the server's: the local
+#      model's vector width differs, so this rehearses mechanics only.
+#
+#   2. hosted embedder (the same one the server will use)
+#      Put the provider key in .env and set brain.conf to the hosted profile.
+#      Ollama is then untouched — OLLAMA_BASE_URL below is simply unused. Now
+#      the vector width matches production, so this database IS the server's:
+#      you can pg_dump it over and skip the first index entirely.
+#
+#   3. hosted embedder + a tunnel (PUBLIC_URL)
+#      Adds the last two things localhost cannot give you: a real certificate
+#      and an OAuth handshake against a public issuer URL. At that point the
+#      only difference from production is which machine it runs on.
+
+services:
+  gbrain:
+    ports:
+      - "127.0.0.1:3131:3131"
+    environment:
+      # Ollama runs on the host, not in the container. Docker Desktop resolves
+      # host.docker.internal for free; the extra_hosts entry below covers Linux.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The issuer advertised in OAuth discovery must match what clients actually
+    # hit. Locally that is localhost — unless you front this with a tunnel, in
+    # which case set PUBLIC_URL to the tunnel's https:// URL and the OAuth flow
+    # becomes the real one, certificate and all:
+    #
+    #   cloudflared tunnel --url http://localhost:3131
+    #   PUBLIC_URL=https://<what-it-printed> docker compose $L up -d db gbrain
+    command:
+      - gbrain
+      - serve
+      - --http
+      - --port
+      - "3131"
+      - --bind
+      - 0.0.0.0
+      - --public-url
+      - ${PUBLIC_URL:-http://localhost:3131}
+
+  bootstrap:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  refresh:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,201 @@
+# Server mode: one brain, reachable by your team over MCP with OAuth.
+#
+#   cd deploy && cp .env.example .env && $EDITOR .env
+#   docker compose build
+#   docker compose run --rm bootstrap      # ONCE: create the brain, clone, register
+#   docker compose run --rm refresh        # first index (the long step)
+#   docker compose up -d                   # serve
+#
+# For a local dry run of all of this — no domain, no TLS, no API key — see
+# docker-compose.local.yml.
+#
+# The whole brain directory is bind-mounted at /brain, so the checkout on the
+# server IS the deployment: edit sources.manifest, re-run refresh, done. Notes
+# written by agents land in ./inbox on the host, where you can commit them.
+
+name: ${BRAIN_ID:?set BRAIN_ID in .env}
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+      POSTGRES_DB: ${PG_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    # Deliberately no `ports:` — the database is reachable only from the
+    # compose network. Nothing about it should be on the public internet.
+
+  gbrain:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        GBRAIN_PIN: ${GBRAIN_PIN:-v0.42.73.2}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Run as the host user that owns the checkout, so files the container
+    # writes (index clones, inbox notes) stay editable and committable.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      GBRAIN_HOME: /brain
+      PG_MANAGED: "0"
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DB: ${PG_DB}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GBRAIN_ADMIN_BOOTSTRAP_TOKEN: ${ADMIN_BOOTSTRAP_TOKEN:-}
+    volumes:
+      - ..:/brain
+      - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
+    expose:
+      - "3131"
+    # --bind 0.0.0.0 is REQUIRED, not tidiness: `serve --http` binds 127.0.0.1
+    # by default, which inside a container means its own loopback, and caddy
+    # gets ECONNREFUSED from the other side of the compose network.
+    #
+    # --public-url must match what clients actually hit, or OAuth discovery
+    # advertises the wrong issuer and every client fails at the handshake.
+    command:
+      - gbrain
+      - serve
+      - --http
+      - --port
+      - "3131"
+      - --bind
+      - 0.0.0.0
+      - --public-url
+      - https://${DOMAIN:?set DOMAIN in .env}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - gbrain
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # Background job worker. ONLY needed if you enable GitHub webhooks: the
+  # webhook endpoint does not sync inline, it enqueues a job, and without a
+  # worker that job sits in the queue forever while GitHub shows a green
+  # delivery. The systemd timer path does not need this — refresh.sh syncs
+  # inline.
+  #   docker compose --profile webhooks up -d
+  worker:
+    profiles: ["webhooks"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        GBRAIN_PIN: ${GBRAIN_PIN:-v0.42.73.2}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      GBRAIN_HOME: /brain
+      PG_MANAGED: "0"
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DB: ${PG_DB}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+    volumes:
+      - ..:/brain
+      - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
+    command: ["gbrain", "jobs", "work"]
+
+  # One-shot: create the brain, clone the repos, register the sources. Run this
+  # ONCE before the first refresh — `refresh` assumes all of it already exists.
+  #   docker compose run --rm bootstrap
+  bootstrap:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        GBRAIN_PIN: ${GBRAIN_PIN:-v0.42.73.2}
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      GBRAIN_HOME: /brain
+      PG_MANAGED: "0"
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DB: ${PG_DB}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      ASSUME_YES: "1"
+    volumes:
+      - ..:/brain
+      - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
+    entrypoint: ["/brain/scripts/bootstrap.sh"]
+
+  # One-shot index refresh. Not started by `up`; invoked explicitly or by the
+  # systemd timer in deploy/systemd/.
+  #   docker compose run --rm refresh
+  refresh:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        GBRAIN_PIN: ${GBRAIN_PIN:-v0.42.73.2}
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      GBRAIN_HOME: /brain
+      PG_MANAGED: "0"
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DB: ${PG_DB}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+    volumes:
+      - ..:/brain
+      - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
+    entrypoint: ["/brain/scripts/refresh.sh"]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

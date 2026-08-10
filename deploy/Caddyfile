@@ -1,0 +1,26 @@
+# Caddy terminates TLS (certificate obtained and renewed automatically from
+# Let's Encrypt) and forwards everything to the gbrain HTTP server.
+#
+# Prerequisite: {$DOMAIN} must already resolve to this host, and ports 80 and
+# 443 must be reachable. Caddy needs :80 for the ACME challenge — a firewall
+# that only opens :443 will leave you without a certificate.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The admin dashboard is protected by gbrain's own bootstrap token, but it
+	# is still the most sensitive surface here. Uncomment to additionally
+	# restrict it to your office or VPN range.
+	# @admin path /admin*
+	# handle @admin {
+	# 	@blocked not remote_ip 203.0.113.0/24
+	# 	respond @blocked 403
+	# 	reverse_proxy gbrain:3131
+	# }
+
+	reverse_proxy gbrain:3131 {
+		# MCP streams responses; do not let the proxy buffer them or clients
+		# sit waiting for a reply that has already been written.
+		flush_interval -1
+	}
+}

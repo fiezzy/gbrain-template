@@ -1,0 +1,19 @@
+[Unit]
+Description=Refresh the %i knowledge base index on a schedule
+
+[Timer]
+# Once a day, before the working day starts. The index describes how the system
+# works, not what merged twenty minutes ago — that question is answered by
+# reading the working tree, and the agent policy says so explicitly.
+#
+# Anyone who needs a merge indexed sooner triggers it themselves: the Run
+# workflow button in the brain repository, scoped to a single source, which
+# takes seconds rather than a full sweep.
+OnCalendar=*-*-* 05:00:00
+# Spread the load if several brains share a host, and catch up after downtime
+# instead of waiting a full day for the next slot.
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

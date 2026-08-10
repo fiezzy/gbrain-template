@@ -1,0 +1,19 @@
+[Unit]
+Description=Refresh the %i knowledge base index
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Point this at the brain checkout on the server.
+WorkingDirectory=/srv/%i-brain/deploy
+ExecStart=/usr/bin/docker compose run --rm refresh
+# The first index can take a long while; a mid-size project on a hosted
+# embedder is tens of minutes, and the guard only needs to stop a genuinely
+# wedged run.
+TimeoutStartSec=4h
+User=brain
+Group=brain
+
+[Install]
+WantedBy=multi-user.target

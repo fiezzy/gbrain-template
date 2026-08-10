@@ -1,0 +1,115 @@
+# Drive the deployed brain from this repository.
+#
+# Three triggers, one mechanism — SSH to the server and run
+# deploy/scripts/apply.sh, which pulls this repo and acts on it:
+#
+#   push to sources.manifest / sparse-excludes  →  bootstrap + refresh
+#       Add a repository by adding a line and pushing. The server clones it,
+#       registers it and indexes it. The manifest stays the single source of
+#       truth and pushing it is what applies it.
+#
+#   manual (Run workflow)                       →  whatever you pick
+#       "I merged something, index it now." Leave `source` empty for the whole
+#       brain, or name one source to index just that repository — seconds
+#       instead of a full sweep.
+#
+# There is deliberately NO schedule here. The daily refresh is a systemd timer
+# on the server (deploy/systemd/), because GitHub's cron is best-effort: runs
+# are delayed, dropped under load, and scheduled workflows are disabled
+# outright in a repository with no activity for 60 days. One scheduler, and it
+# is the reliable one.
+#
+# ── Required secrets ────────────────────────────────────────────────────────
+#   BRAIN_SSH_KEY    private key with access to the server (ed25519)
+#   BRAIN_SSH_HOST   e.g. brain.acme.example
+#   BRAIN_SSH_USER   e.g. brain
+#   BRAIN_DIR        checkout path on the server, e.g. /srv/acme-brain
+#
+# Give that key its own account, restricted to this job. It can run docker on
+# your server; treat it accordingly.
+
+name: brain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sources.manifest'
+      - 'sparse-excludes'
+      - 'brain.conf'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to run on the server'
+        required: true
+        default: refresh
+        type: choice
+        options: [refresh, apply, verify]
+      source:
+        description: 'Only this source (a manifest id, e.g. api-v5). Empty = all.'
+        required: false
+        default: ''
+        type: string
+
+# Never let two runs touch the server at once. apply.sh also takes a flock on
+# the server, which covers the systemd timer racing this; this one keeps the
+# queue visible in the Actions UI instead of piling up on the host.
+concurrency:
+  group: brain-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Pick the action
+        id: pick
+        env:
+          # Through the environment, never interpolated into the script body:
+          # `source` is free text a user typed into a form.
+          IN_ACTION: ${{ inputs.action }}
+          IN_SOURCE: ${{ inputs.source }}
+        run: |
+          case "${{ github.event_name }}" in
+            push)              action=apply ;;
+            workflow_dispatch) action="${IN_ACTION:-refresh}" ;;
+            *)                 action=refresh ;;
+          esac
+          source_id="${IN_SOURCE:-}"
+          # A manifest change can add or re-point any source, so `apply` is
+          # always brain-wide; a scope there would leave the rest inconsistent.
+          [[ "$action" == "apply" ]] && source_id=""
+          if [[ -n "$source_id" && ! "$source_id" =~ ^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$ ]]; then
+            echo "::error::invalid source id '$source_id' — expected 2-32 chars of [a-z0-9-]"
+            exit 1
+          fi
+          echo "action=$action"      >> "$GITHUB_OUTPUT"
+          echo "source=$source_id"   >> "$GITHUB_OUTPUT"
+          echo "::notice::$action${source_id:+ scoped to $source_id}"
+
+      - name: Open an SSH session
+        env:
+          KEY: ${{ secrets.BRAIN_SSH_KEY }}
+          HOST: ${{ secrets.BRAIN_SSH_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_brain
+          chmod 600 ~/.ssh/id_brain
+          # Pin the host key now rather than trusting whatever answers later.
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run on the server
+        env:
+          HOST: ${{ secrets.BRAIN_SSH_HOST }}
+          USER_NAME: ${{ secrets.BRAIN_SSH_USER }}
+          DIR: ${{ secrets.BRAIN_DIR }}
+          ACTION: ${{ steps.pick.outputs.action }}
+          SOURCE: ${{ steps.pick.outputs.source }}
+        run: |
+          ssh -i ~/.ssh/id_brain -o BatchMode=yes "$USER_NAME@$HOST" \
+            "$DIR/deploy/scripts/apply.sh $ACTION $SOURCE"
+
+      - name: Clean up the key
+        if: always()
+        run: rm -f ~/.ssh/id_brain
