@@ -80,6 +80,24 @@ load_conf() {
   PGDATA="${PGDATA:-$BRAIN_DIR/db/pg}"
   export PGDATA
 
+  # Private repositories over HTTPS. On your own machine git already has a
+  # credential helper; a container has nothing, so cloning a private repo fails
+  # with an authentication prompt it cannot answer.
+  #
+  # GITHUB_TOKEN (a PAT with `repo` read, or `gh auth token`) rewrites
+  # github.com HTTPS URLs to carry it. Nothing is written to disk and the
+  # manifest keeps clean, committable URLs.
+  #
+  # Trade-off worth knowing: the token lands in this process's environment, so
+  # it is visible to anyone who can read /proc for it. Fine on a laptop and in
+  # a single-tenant container; on a shared host prefer a mounted credentials
+  # file (see deploy/README.md) or SSH URLs with a deploy key.
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf"
+    export GIT_CONFIG_VALUE_0="https://github.com/"
+  fi
+
   # Where Postgres lives, and who owns its lifecycle.
   #   PG_MANAGED=1  this brain owns a dedicated cluster in db/pg and starts it
   #                 on demand (the local default)

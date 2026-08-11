@@ -60,6 +60,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GBRAIN_ADMIN_BOOTSTRAP_TOKEN: ${ADMIN_BOOTSTRAP_TOKEN:-}
     volumes:
@@ -131,6 +132,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - ..:/brain
       - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
@@ -164,6 +166,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ASSUME_YES: "1"
     volumes:
       - ..:/brain
@@ -198,6 +201,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - ..:/brain
       - ${DEPLOY_KEY_DIR:-./keys}:/keys:ro
