@@ -113,12 +113,35 @@ fi
 # ------------------------------------------------------------- reranker ----
 
 echo
-log "Reranker (optional — improves precision, costs a local process)"
-info "local  llama-server with a small GGUF cross-encoder on :PORT, free"
-info "none   hybrid RRF only; everything still works, precision is lower"
-ask RERANKER "Reranker (local|none)" "local"
+log "Reranker — a cross-encoder that re-scores the top candidates"
+cat <<'TXT'
+    It sits between hybrid retrieval and the token budget, and it is the
+    single biggest precision win available. Without it you get RRF order.
+
+      local   llama-server with a GGUF cross-encoder on this machine. Free.
+              Started by scripts/serve.sh, which is the STDIO entrypoint —
+              so this option does nothing in the Docker/server deployment.
+      hosted  ZeroEntropy zerank-2, ~$0.0003 per query. Works in both modes,
+              and it is the only one that works on the server. Needs a
+              second key: ZEROENTROPY_API_KEY.
+      none    hybrid RRF only. Everything works; precision is lower.
+TXT
+ask RERANKER "Reranker (local|hosted|none)" "$([[ "$EMBED_PROFILE" == "hosted" ]] && echo hosted || echo local)"
+case "$RERANKER" in
+  local|hosted|none) ;;
+  *) die "reranker must be local, hosted or none" ;;
+esac
 RERANK_PORT="${RERANK_PORT:-$(free_port_from 8081)}"
-[[ "$RERANKER" == "local" ]] && info "reranker      :$RERANK_PORT"
+case "$RERANKER" in
+  local)
+    info "reranker      local llama-server on :$RERANK_PORT (stdio sessions only)"
+    ;;
+  hosted)
+    info "reranker      zeroentropyai:zerank-2"
+    [[ -n "${ZEROENTROPY_API_KEY:-}" ]] \
+      || warn "ZEROENTROPY_API_KEY is not set — rerank calls fail open (search still works, just RRF order)"
+    ;;
+esac
 
 # -------------------------------------------------------------- sources ----
 
@@ -209,9 +232,15 @@ EMBED_PROFILE=$EMBED_PROFILE
 EMBED_MODEL=$EMBED_MODEL
 EMBED_DIMS=$EMBED_DIMS
 
-# Reranker: local | none
+# Reranker: local | hosted | none
+#   local   llama-server started by scripts/serve.sh — STDIO SESSIONS ONLY.
+#           The Docker deployment runs 'gbrain serve --http' directly and
+#           never calls serve.sh, so 'local' is a no-op there.
+#   hosted  zeroentropyai:zerank-2, applied by bootstrap.sh to the brain's
+#           own config. Works in both modes. Needs ZEROENTROPY_API_KEY.
 : "\${RERANKER:=$RERANKER}"
 : "\${RERANK_PORT:=$RERANK_PORT}"
+: "\${RERANK_HOSTED_MODEL:=zeroentropyai:zerank-2}"
 
 # Pinned gbrain. NOTE: gbrain installs globally (bun install -g), so this pin
 # is machine-wide, not per-brain. verify.sh reports drift; nothing enforces it.

@@ -179,13 +179,34 @@ fi
 
 # ------------------------------------------------------------- reranker ----
 
-if [[ "$RERANKER" == "local" ]]; then
+if [[ "$RERANKER" != "none" ]]; then
   log "Reranker"
+fi
+
+if [[ "$RERANKER" == "local" ]]; then
   if reranker_ready; then
     pass "reranker answers a real /v1/rerank call on :$RERANK_PORT"
   else
     soft "reranker not responding on :$RERANK_PORT" \
          "It starts lazily with scripts/serve.sh. Note /health lies during model load — this check uses a real rerank call, which is why it is trustworthy."
+  fi
+fi
+
+if [[ "$RERANKER" == "hosted" ]]; then
+  rr_on=$(gbrain config get search.reranker.enabled 2>/dev/null | tr -d '[:space:]')
+  rr_model=$(gbrain config get search.reranker.model 2>/dev/null | tr -d '[:space:]')
+  if [[ "$rr_on" == "true" ]]; then
+    pass "search.reranker.enabled=true, model=${rr_model:-<unset>}"
+  else
+    fail "search.reranker.enabled is '${rr_on:-<unset>}'" "run scripts/bootstrap.sh"
+  fi
+  # The failure mode here is silent by design: a missing key makes every rerank
+  # call fail OPEN, so search keeps answering in RRF order and nothing errors.
+  if [[ -n "${ZEROENTROPY_API_KEY:-}" ]]; then
+    pass "ZEROENTROPY_API_KEY present"
+  else
+    fail "ZEROENTROPY_API_KEY is not set" \
+         "Rerank calls fail open — search still answers, just without the precision the reranker buys. Nothing will tell you at query time."
   fi
 fi
 

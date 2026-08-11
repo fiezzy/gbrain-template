@@ -288,6 +288,19 @@ fi
 
 # -------------------------------------------------------------- models ----
 
+if [[ "$RERANKER" == "hosted" ]]; then
+  log "Reranker"
+  # Stored in the brain's own config, so it applies to every transport —
+  # stdio and `serve --http` alike. Without the key the rerank call fails
+  # open: search still answers, in RRF order, and `gbrain doctor` surfaces it.
+  gbrain config set search.reranker.enabled true >/dev/null 2>&1 \
+    && gbrain config set search.reranker.model "${RERANK_HOSTED_MODEL:-zeroentropyai:zerank-2}" >/dev/null 2>&1 \
+    && ok "${RERANK_HOSTED_MODEL:-zeroentropyai:zerank-2}" \
+    || warn "could not set search.reranker.* — check 'gbrain config show'"
+  [[ -n "${ZEROENTROPY_API_KEY:-}" ]] \
+    || warn "ZEROENTROPY_API_KEY is not set: every rerank call will fail open and search falls back to RRF order"
+fi
+
 if [[ "$RERANKER" == "local" ]]; then
   log "Reranker model"
   CACHE="${GBRAIN_MODEL_CACHE:-$HOME/.cache/gbrain/models}"

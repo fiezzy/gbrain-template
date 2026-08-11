@@ -29,6 +29,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck disable=SC1091
 set -a; source .env; set +a
 
+# Where clients actually reach this brain. On a server that is the domain; in a
+# local rehearsal it is localhost, or a tunnel URL. Must match the server's
+# --public-url or the OAuth handshake fails.
+ENDPOINT="${PUBLIC_URL:-https://${DOMAIN:-<domain>}}"
+
 dc() { docker compose "$@"; }
 gb() { dc exec -T gbrain gbrain "$@"; }
 
@@ -41,7 +46,7 @@ case "${1:-}" in
     echo "Bearer tokens (legacy auth):"
     gb auth list || true
     echo
-    echo "OAuth clients are listed at https://${DOMAIN:-<domain>}/admin — no CLI equivalent."
+    echo "OAuth clients are listed at $ENDPOINT/admin — no CLI equivalent."
     exit 0
     ;;
   --revoke)
@@ -114,7 +119,7 @@ NOTHING GETS INSTALLED on their machine — no gbrain, no database, no
 models, no clones. Claude Code talks to this server over HTTP, so all
 they need is Claude Code itself. They run, in their project directory:
 
-  claude mcp add ${BRAIN_ID:-brain} -t http https://$DOMAIN/mcp \\
+  claude mcp add ${BRAIN_ID:-brain} -t http $ENDPOINT/mcp \\
     --client-id     <client_id from above> \\
     --client-secret <client_secret from above>
 
