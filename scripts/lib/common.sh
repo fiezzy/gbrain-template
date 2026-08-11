@@ -48,6 +48,20 @@ die()  { printf '%s ERR%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 # ---------------------------------------------------------------- config ----
 
 load_conf() {
+  # Secrets first, so brain.conf's ${VAR:=default} assignments see them and the
+  # environment keeps winning. This file is gitignored and is the ONLY place in
+  # a local install where an API key belongs — brain.conf is committed.
+  if [[ -f "$BRAIN_DIR/.env" ]]; then
+    local perms
+    perms=$(stat -f '%Lp' "$BRAIN_DIR/.env" 2>/dev/null || stat -c '%a' "$BRAIN_DIR/.env" 2>/dev/null || echo '')
+    [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]] \
+      && warn ".env is mode $perms — it holds API keys; chmod 600 .env"
+    set -a
+    # shellcheck disable=SC1091
+    source "$BRAIN_DIR/.env"
+    set +a
+  fi
+
   [[ -f "$CONF" ]] || die "no brain.conf — run scripts/init.sh first"
   # shellcheck disable=SC1090
   source "$CONF"

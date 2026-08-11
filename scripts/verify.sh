@@ -202,10 +202,11 @@ if [[ "$RERANKER" == "hosted" ]]; then
   fi
   # The failure mode here is silent by design: a missing key makes every rerank
   # call fail OPEN, so search keeps answering in RRF order and nothing errors.
-  if [[ -n "${ZEROENTROPY_API_KEY:-}" ]]; then
-    pass "ZEROENTROPY_API_KEY present"
+  rr_key_var="${RERANK_KEY_VAR:-OPENROUTER_API_KEY}"
+  if [[ -n "${!rr_key_var:-}" ]]; then
+    pass "$rr_key_var present"
   else
-    fail "ZEROENTROPY_API_KEY is not set" \
+    fail "$rr_key_var is not set" \
          "Rerank calls fail open — search still answers, just without the precision the reranker buys. Nothing will tell you at query time."
   fi
 fi

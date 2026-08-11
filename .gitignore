@@ -7,5 +7,9 @@ backups/
 .gbrain/
 models/
 
+# API keys for a LOCAL install. brain.conf is committed and holds only the
+# NAME of each key variable; the values live here and never leave the machine.
+/.env
+
 *.log
 .DS_Store
