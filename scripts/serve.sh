@@ -29,31 +29,20 @@ export PATH
 
 pg_ensure_running
 
+# --------------------------------------------------------------- ollama ----
+
+# Not just an index-time dependency: every search embeds its query. A stopped
+# daemon here means searches return nothing rather than returning less.
+if [[ "$EMBED_PROFILE" == "local" ]]; then
+  ollama_ensure_running
+fi
+
 # ------------------------------------------------------------- reranker ----
 
 if [[ "$RERANKER" == "local" ]]; then
-  CACHE="${GBRAIN_MODEL_CACHE:-$HOME/.cache/gbrain/models}"
-  MODEL_PATH="$CACHE/$RERANK_MODEL_FILE"
-
-  if [[ -f "$MODEL_PATH" ]] && ! reranker_ready; then
-    # Concurrent sessions may race to spawn one; the loser fails to bind the
-    # port and exits. Harmless.
-    nohup llama-server -m "$MODEL_PATH" \
-      --alias "${RERANK_MODEL_FILE%.gguf}" \
-      --reranking --pooling rank -ngl 99 \
-      -b 2048 -ub 2048 -c "${RERANK_CTX:-8192}" \
-      --host 127.0.0.1 --port "$RERANK_PORT" \
-      >> "$BRAIN_DIR/db/reranker.log" 2>&1 &
-
-    # /health returns ok BEFORE the model finishes loading, and gbrain queries
-    # against a half-loaded reranker silently return "No results". Probe with a
-    # real rerank call. Capped so we stay under the MCP client's startup
-    # timeout — if it is not up by then, serve anyway without it.
-    for _ in $(seq 1 25); do
-      reranker_ready && break
-      sleep 1
-    done
-  fi
+  # Never fatal: a missing reranker costs precision, not answers, and refusing
+  # to serve would cost both.
+  reranker_ensure_running || true
 fi
 
 # ---------------------------------------------------------------- serve ----

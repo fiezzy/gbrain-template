@@ -35,9 +35,12 @@ fi
 
 if [[ "$EMBED_PROFILE" == "local" ]]; then
   need ollama "the local embedding profile needs Ollama — https://ollama.com"
+  # `ollama pull` talks to the daemon over HTTP; without it the pull fails with
+  # a connection error rather than anything that names the real problem.
+  ollama_ensure_running
   ollama_model="${EMBED_MODEL#ollama:}"
-  if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qxF "$ollama_model"; then
-    log "Pulling embedding model $ollama_model (several GB, once per machine)"
+  if ! ollama_has_model "$ollama_model"; then
+    log "Pulling embedding model $ollama_model (once per machine)"
     ollama pull "$ollama_model"
   fi
   info "embedder      $EMBED_MODEL (local)"
@@ -60,6 +63,47 @@ fi
 
 # -------------------------------------------------------------- gbrain ----
 
+# `bun install -g` is the documented way in, and it works on a machine that has
+# no gbrain. Upgrading an EXISTING install is where it breaks: bun's "global"
+# root is $HOME, gbrain is pinned there to a git ref, and asking for a different
+# ref of the same package makes bun report
+#
+#   error: Package "gbrain@github:...#<new>" has a dependency loop
+#
+# and change nothing. Measured on bun 1.3.11 going 0.42.59.0 -> 0.45.2.0;
+# `--force` does not help. Editing the ref in ~/package.json and running a plain
+# `bun install` there does work, so that is the fallback — with the manual
+# recipe printed if even that fails, because a half-replaced global tool is the
+# one outcome worth being loud about.
+gbrain_install_pin() {
+  local spec="github:garrytan/gbrain#$GBRAIN_PIN"
+  bun install -g "$spec" 2>&1 && return 0
+
+  warn "bun install -g failed (usually the dependency-loop bug on an upgrade)"
+  local home_manifest="$HOME/package.json"
+  if [[ -f "$home_manifest" ]] && grep -q '"gbrain"' "$home_manifest"; then
+    info "retrying by repinning $home_manifest"
+    cp "$home_manifest" "$home_manifest.bak-$$"
+    if python3 - "$home_manifest" "$spec" <<'PY'
+import json, sys
+path, spec = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+d.setdefault('dependencies', {})['gbrain'] = spec
+json.dump(d, open(path, 'w'), indent=2)
+PY
+    then
+      ( cd "$HOME" && bun install ) && { rm -f "$home_manifest.bak-$$"; return 0; }
+    fi
+    mv "$home_manifest.bak-$$" "$home_manifest"
+  fi
+
+  die "could not install $GBRAIN_PIN.
+    Do it by hand, then re-run this script:
+      1. edit ~/package.json so \"gbrain\" points at $spec
+      2. cd ~ && bun install
+    Nothing was changed. If a previous gbrain is installed it is still intact."
+}
+
 log "gbrain $GBRAIN_PIN"
 installed=""
 command -v gbrain >/dev/null 2>&1 && installed="$(gbrain --version 2>/dev/null | awk '{print $2}')"
@@ -70,9 +114,25 @@ if [[ -z "$installed" ]]; then
   bun install -g "github:garrytan/gbrain#$GBRAIN_PIN"
 elif [[ "$installed" != "$want" ]]; then
   warn "installed gbrain is $installed, this brain pins $want."
-  warn "gbrain installs GLOBALLY, so changing it affects every brain on this machine."
-  if confirm "    Install $GBRAIN_PIN now?"; then
-    bun install -g "github:garrytan/gbrain#$GBRAIN_PIN"
+  warn "gbrain installs GLOBALLY. Changing it affects EVERY brain on this machine,"
+  warn "and it silently discards any local modification of the install — including"
+  warn "the stdio-trust patch from scripts/patch-stdio-trust.sh, if applied."
+  #
+  # Deliberately NOT gated on ASSUME_YES. `--yes` means "do not ask me about
+  # THIS brain"; it must not also mean "replace a machine-wide tool other
+  # brains depend on". An unattended run therefore keeps what is installed and
+  # reports the drift, which is the recoverable outcome. Opting in takes a
+  # separate, explicit variable.
+  if [[ "${GBRAIN_ALLOW_UPGRADE:-0}" == "1" ]]; then
+    info "GBRAIN_ALLOW_UPGRADE=1 — installing $GBRAIN_PIN"
+    gbrain_install_pin
+  elif [[ "${ASSUME_YES:-0}" == "1" ]]; then
+    warn "keeping $installed — an unattended run will not replace a global install."
+    warn "To upgrade on purpose: GBRAIN_ALLOW_UPGRADE=1 ./scripts/setup.sh"
+  elif confirm "    Install $GBRAIN_PIN now, replacing $installed for every brain?"; then
+    gbrain_install_pin
+    warn "if this machine had the stdio-trust patch, re-apply it:"
+    warn "  ./scripts/patch-stdio-trust.sh --status"
   else
     info "keeping $installed — verify.sh will keep reporting the drift"
   fi

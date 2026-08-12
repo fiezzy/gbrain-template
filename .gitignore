@@ -11,5 +11,8 @@ models/
 # NAME of each key variable; the values live here and never leave the machine.
 /.env
 
+# Working note for the session handoff — not part of the template.
+docs/HANDOFF.md
+
 *.log
 .DS_Store

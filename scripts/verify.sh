@@ -184,11 +184,28 @@ if [[ "$RERANKER" != "none" ]]; then
 fi
 
 if [[ "$RERANKER" == "local" ]]; then
-  if reranker_ready; then
+  # Start it the way serve.sh does rather than reporting on whatever happened to
+  # be running. Otherwise this check answers "did someone open an agent session
+  # recently", which is not the question.
+  if reranker_ensure_running; then
     pass "reranker answers a real /v1/rerank call on :$RERANK_PORT"
   else
     soft "reranker not responding on :$RERANK_PORT" \
-         "It starts lazily with scripts/serve.sh. Note /health lies during model load — this check uses a real rerank call, which is why it is trustworthy."
+         "Model file missing from the cache, llama-server not installed, or it did not load in 25s. /health lies during model load — this check uses a real rerank call, which is why it is trustworthy."
+  fi
+
+  # Running is only half of it: gbrain calls a reranker only when the config
+  # points at one. A started-but-unwired reranker burns memory and never
+  # receives a request, and nothing at query time says so.
+  rr_on=$(gbrain config get search.reranker.enabled 2>/dev/null | tr -d '[:space:]')
+  rr_model=$(gbrain config get search.reranker.model 2>/dev/null | tr -d '[:space:]')
+  rr_url=$(gbrain config get provider_base_urls.llama-server-reranker 2>/dev/null | tr -d '[:space:]')
+  want_model="llama-server-reranker:$(reranker_alias)"
+  if [[ "$rr_on" == *true ]] && [[ "$rr_model" == *"$want_model" ]] && [[ "$rr_url" == *":$RERANK_PORT/v1" ]]; then
+    pass "gbrain is wired to the local reranker ($want_model)"
+  else
+    fail "gbrain is not wired to the local reranker" \
+         "Expected search.reranker.enabled=true, search.reranker.model=$want_model, provider_base_urls.llama-server-reranker=http://127.0.0.1:$RERANK_PORT/v1. Run scripts/setup.sh to write them. Until then the process runs but never gets a request, and search silently falls back to RRF order."
   fi
 fi
 

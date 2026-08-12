@@ -21,7 +21,27 @@ FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
 if [[ -f "$CONF" && $FORCE -eq 0 ]]; then
-  die "brain.conf already exists. Re-run with --force to overwrite, or edit it by hand."
+  die "brain.conf already exists — and if you did not write it, you are in the wrong script.
+
+    brain.conf arrives WITH the repo. It pins the embedding model and vector
+    width that every teammate's database must agree on, which is exactly what
+    makes one person's index restorable on another person's machine.
+
+    To set up this brain on your machine:  ./scripts/setup.sh
+    To change the brain's settings:        edit brain.conf by hand
+    To start over from nothing:            ./scripts/init.sh --force"
+fi
+
+# --force past an already-built brain is the genuinely destructive case: the
+# vector width is baked into the schema at 'gbrain init', so rewriting the
+# config to a different model leaves every stored embedding uncomparable to
+# every new one. Search does not error — it just quietly stops matching.
+if [[ -f "$CONF" && $FORCE -eq 1 && -f "$GBRAIN_CONFIG_DIR/config.json" ]]; then
+  warn "this brain is already initialised (.gbrain/config.json exists)."
+  warn "Changing EMBED_MODEL or EMBED_DIMS now does NOT re-embed anything;"
+  warn "old and new vectors become mutually meaningless and search degrades silently."
+  warn "The supported path is: gbrain retrieval-upgrade --to <model> --reindex"
+  confirm "    Overwrite brain.conf anyway?" || exit 0
 fi
 
 interactive() { [[ -t 0 && "${ASSUME_YES:-0}" != "1" ]]; }
@@ -71,10 +91,10 @@ cat <<'TXT'
     This is a one-way door: the vector width is baked into the database
     schema, so changing it later means re-embedding everything from scratch.
 
-      local   Ollama on this machine. Free, nothing leaves the box, RU/EN
-              both work. 2560 dimensions — that is ABOVE pgvector's 2000-dim
-              HNSW ceiling, so vector search runs as an exact scan. Fine for
-              one person on a laptop; it does not scale to a shared server.
+      local   Ollama on this machine. Free, nothing leaves the box, and the
+              default model covers 100+ natural languages plus source code —
+              which is what a Russian-language question about English code
+              needs. 1024 dimensions, so HNSW is built and search stays fast.
 
       hosted  Voyage / ZeroEntropy / OpenAI. Cents per full re-index, ~1024-1536
               dimensions, so HNSW actually gets built and search stays fast as
@@ -85,8 +105,15 @@ ask EMBED_PROFILE "Profile (local|hosted)" "local"
 
 case "$EMBED_PROFILE" in
   local)
-    EMBED_MODEL="${EMBED_MODEL:-ollama:qwen3-embedding:4b-q8_0}"
-    EMBED_DIMS="${EMBED_DIMS:-2560}"
+    # 1024 is this model's NATIVE width, and that matters more than it looks.
+    # Qwen3 supports Matryoshka truncation, so the larger 4b (2560d) could in
+    # principle be cut down to 1024 — but gbrain never sends a `dimensions`
+    # field to a generic OpenAI-compatible provider like Ollama (see
+    # core/ai/dims.ts, which special-cases only Voyage/ZeroEntropy/OpenAI/
+    # DashScope/Zhipu). So the width you get is whatever the model natively
+    # returns, and anything over 2000 loses the HNSW index for good.
+    EMBED_MODEL="${EMBED_MODEL:-ollama:qwen3-embedding:0.6b}"
+    EMBED_DIMS="${EMBED_DIMS:-1024}"
     ;;
   hosted)
     echo
@@ -273,7 +300,7 @@ EMBED_DIMS=$EMBED_DIMS
 
 # Pinned gbrain. NOTE: gbrain installs globally (bun install -g), so this pin
 # is machine-wide, not per-brain. verify.sh reports drift; nothing enforces it.
-: "\${GBRAIN_PIN:=v0.42.73.2}"
+: "\${GBRAIN_PIN:=v0.45.2.0}"
 
 # Reranker model, downloaded once into a shared cache (~/.cache/gbrain/models)
 # so N brains on this machine do not each keep their own copy.

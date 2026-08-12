@@ -23,6 +23,23 @@ json_str() {
   fi
 }
 
+# The entrypoint the probe speaks to. This MUST be scripts/serve.sh, not bare
+# `gbrain serve`: serve.sh is what register-mcp.sh hands to Claude Code, and it
+# is where Postgres, Ollama and the reranker are started for the session. A probe
+# that skipped it would exercise a path no agent ever takes — and would report
+# retrieval as healthy while the real entrypoint was broken.
+#
+# Falls back to bare `gbrain serve` only when serve.sh is missing or not
+# executable, which is itself worth seeing in the output.
+mcp_serve() {
+  local entry="$BRAIN_DIR/scripts/serve.sh"
+  if [[ -x "$entry" ]]; then
+    exec "$entry"
+  else
+    exec gbrain serve
+  fi
+}
+
 # mcp_tool_call <tool> <arguments-json> [timeout-seconds]
 # Prints the raw JSON-RPC response line for the call. Returns non-zero if the
 # server never answered.
@@ -39,7 +56,7 @@ mcp_tool_call() {
     # Hold stdin open: the server exits on EOF, sometimes before it has
     # flushed a slow reply (a cold query embeds the text first).
     sleep "$timeout"
-  } | gbrain serve >"$out" 2>"$err" &
+  } | mcp_serve >"$out" 2>"$err" &
   pid=$!
 
   for ((i = 0; i < timeout; i++)); do

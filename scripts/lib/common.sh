@@ -179,6 +179,44 @@ psql_brain() {
     -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" "$@"
 }
 
+# --------------------------------------------------------------- ollama ----
+
+# The local embedder is not only an index-time dependency. Every SEARCH embeds
+# its query, so a stopped Ollama daemon does not degrade the brain — it stops it
+# answering at all. Nothing in this template runs at boot, so the daemon is
+# started on demand here, the same way Postgres and the reranker are.
+OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-http://127.0.0.1:11434}"
+
+ollama_ready() {
+  curl -s -m 2 "$OLLAMA_HOST_URL/api/version" >/dev/null 2>&1
+}
+
+ollama_ensure_running() {
+  ollama_ready && return 0
+  command -v ollama >/dev/null 2>&1 \
+    || die "ollama is not installed — run scripts/setup.sh, or: brew install ollama"
+
+  mkdir -p "$BRAIN_DIR/db"
+  nohup ollama serve >> "$BRAIN_DIR/db/ollama.log" 2>&1 &
+
+  local i
+  for i in $(seq 1 20); do
+    ollama_ready && return 0
+    sleep 1
+  done
+  die "ollama did not come up at $OLLAMA_HOST_URL — see $BRAIN_DIR/db/ollama.log"
+}
+
+# `ollama list` prints the fully-tagged name, so a model configured without a
+# tag ('bge-m3') never matches its listed row ('bge-m3:latest') and would be
+# re-pulled on every run. Compare against both forms.
+ollama_has_model() {
+  local want="$1" listed
+  listed=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+  grep -qxF "$want" <<<"$listed" && return 0
+  [[ "$want" == *:* ]] || grep -qxF "$want:latest" <<<"$listed"
+}
+
 # ------------------------------------------------------------- reranker ----
 
 # /health returns ok BEFORE the model finishes loading, and gbrain queries
@@ -188,6 +226,45 @@ reranker_ready() {
   curl -s -m 2 "http://127.0.0.1:$RERANK_PORT/v1/rerank" \
     -H 'Content-Type: application/json' \
     -d '{"query":"x","documents":["y"]}' 2>/dev/null | grep -q relevance_score
+}
+
+# The alias the server is launched under. gbrain's configured reranker model id
+# must match it exactly, so both sides derive it from one place.
+reranker_alias() { printf '%s' "${RERANK_MODEL_FILE%.gguf}"; }
+
+# Started on demand and left running — llama-server has no idle exit. Lives here
+# rather than in serve.sh because verify.sh needs the identical start path: a
+# check that only ever observes a reranker somebody else happened to start is
+# not a check.
+reranker_ensure_running() {
+  reranker_ready && return 0
+
+  local cache model_path
+  cache="${GBRAIN_MODEL_CACHE:-$HOME/.cache/gbrain/models}"
+  model_path="$cache/$RERANK_MODEL_FILE"
+  [[ -f "$model_path" ]] || return 1
+  command -v llama-server >/dev/null 2>&1 || return 1
+
+  mkdir -p "$BRAIN_DIR/db"
+  # Concurrent sessions may race to spawn one; the loser fails to bind the port
+  # and exits. Harmless.
+  nohup llama-server -m "$model_path" \
+    --alias "$(reranker_alias)" \
+    --reranking --pooling rank -ngl 99 \
+    -b 2048 -ub 2048 -c "${RERANK_CTX:-8192}" \
+    --host 127.0.0.1 --port "$RERANK_PORT" \
+    >> "$BRAIN_DIR/db/reranker.log" 2>&1 &
+
+  # /health returns ok BEFORE the model finishes loading, and gbrain queries
+  # against a half-loaded reranker silently return "No results". Probe with a
+  # real rerank call. Capped so we stay under an MCP client's startup timeout —
+  # if it is not up by then, carry on without it.
+  local i
+  for i in $(seq 1 25); do
+    reranker_ready && return 0
+    sleep 1
+  done
+  return 1
 }
 
 # -------------------------------------------------------------- manifest ----
