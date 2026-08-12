@@ -398,7 +398,13 @@ if [[ -f "$SPARSE" ]]; then
       # only the root one, while `scripts/package-lock.json` and
       # `admin-panel/package-lock.json` sailed into the index. Beyond the noise,
       # dense generated JSON is what crashes a local embedding runner.
-      if [[ "$path" == */* ]]; then
+      # A LEADING slash pins the pattern to the repository root and nowhere
+      # else, which is the difference between dropping a repo's top-level
+      # `scripts/` and also dropping `src/database/scripts/` — real code that
+      # merely shares the name.
+      if [[ "$path" == /* ]]; then
+        rules+=("!$path")
+      elif [[ "$path" == */* ]]; then
         rules+=("!/$path")
       else
         rules+=("!$path")
