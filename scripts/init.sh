@@ -307,6 +307,18 @@ EMBED_DIMS=$EMBED_DIMS
 : "\${RERANK_MODEL_FILE:=Qwen3-Reranker-0.6B.Q8_0.gguf}"
 : "\${RERANK_MODEL_URL:=https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF/resolve/main/Qwen3-Reranker-0.6B.Q8_0.gguf}"
 : "\${RERANK_CTX:=8192}"
+
+# How much retrieved text a search hands back. This is a TEAM setting: it sets
+# the downstream agent's input cost and how much context it gets, so it belongs
+# here rather than in each person's answer to an init-time wizard.
+#   conservative  4K cap, 10 chunks  — cheap agents, high-volume search loops
+#   balanced      12K cap, 25 chunks — the default, and the right one when a
+#                                      reranker is on: it has already put the
+#                                      good chunks on top, so more is waste
+#   tokenmax      no cap, 50 chunks, LLM query expansion (needs an expansion key,
+#                                      so it is only partly available on a fully
+#                                      local profile)
+: "\${SEARCH_MODE:=balanced}"
 CONF
 ok "brain.conf"
 

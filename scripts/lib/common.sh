@@ -197,7 +197,15 @@ ollama_ensure_running() {
     || die "ollama is not installed — run scripts/setup.sh, or: brew install ollama"
 
   mkdir -p "$BRAIN_DIR/db"
-  nohup ollama serve >> "$BRAIN_DIR/db/ollama.log" 2>&1 &
+  # Cap the context window. Ollama defaults to 32768 and sizes its KV cache to
+  # match, which turned a 639MB embedding model into a 5.8GB resident process —
+  # measured. Under the parallel workers refresh.sh uses, that runs the machine
+  # out of memory and the model runner dies mid-request, surfacing as
+  # "llama-server process no longer running" against random pages. Embedding
+  # chunks never needs more than a few thousand tokens, so the cap costs
+  # nothing and removes the failure mode.
+  OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-8192}" \
+    nohup ollama serve >> "$BRAIN_DIR/db/ollama.log" 2>&1 &
 
   local i
   for i in $(seq 1 20); do

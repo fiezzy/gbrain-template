@@ -39,9 +39,38 @@ if [[ "$EMBED_PROFILE" == "local" ]]; then
   # a connection error rather than anything that names the real problem.
   ollama_ensure_running
   ollama_model="${EMBED_MODEL#ollama:}"
-  if ! ollama_has_model "$ollama_model"; then
-    log "Pulling embedding model $ollama_model (once per machine)"
-    ollama pull "$ollama_model"
+  ollama_base="${EMBED_BASE_MODEL:-$ollama_model}"
+
+  if ! ollama_has_model "$ollama_base"; then
+    log "Pulling embedding model $ollama_base (once per machine)"
+    ollama pull "$ollama_base"
+  fi
+
+  # A derived model exists for exactly one reason: batch size. Ollama serves
+  # embeddings with a 2048-token batch and the whole request must fit in one,
+  # or the model runner is killed — surfacing as "llama-server process no
+  # longer running" against whichever page was in flight, with the rest of the
+  # import continuing as if nothing happened. gbrain caps chunks at an
+  # ESTIMATED 2000 tokens and that estimate undershoots on dense JSON, so the
+  # real count lands just over the limit. Measured: 2054-2135 tokens on the
+  # chunks that killed it, while much longer code chunks passed.
+  #
+  # Same weights, so the vectors are interchangeable (verified: cosine
+  # 1.000000 against the base). Nothing needs re-embedding when this is
+  # introduced to an existing brain.
+  if [[ "$ollama_model" != "$ollama_base" ]]; then
+    if ollama_has_model "$ollama_model"; then
+      dim "derived model $ollama_model"
+    else
+      log "Creating $ollama_model (num_batch=${EMBED_NUM_BATCH:-4096})"
+      modelfile="$(mktemp)"
+      printf 'FROM %s\nPARAMETER num_batch %s\n' \
+        "$ollama_base" "${EMBED_NUM_BATCH:-4096}" > "$modelfile"
+      ollama create "$ollama_model" -f "$modelfile" >/dev/null \
+        && ok "$ollama_model" \
+        || die "could not create $ollama_model from $ollama_base"
+      rm -f "$modelfile"
+    fi
   fi
   info "embedder      $EMBED_MODEL (local)"
 else
@@ -209,11 +238,30 @@ log "Brain"
 if [[ -f "$GBRAIN_CONFIG_DIR/config.json" ]]; then
   ok "already initialized ($GBRAIN_CONFIG_DIR)"
 else
+  # --non-interactive is required, not merely convenient: since 0.45 `gbrain
+  # init` opens a "Search mode preference" wizard and blocks on stdin. That
+  # stalls an unattended setup forever, and left to each person it would make
+  # retrieval behave differently on every teammate's machine for no visible
+  # reason. The mode belongs in brain.conf with everything else the team shares.
   gbrain init --url "$(database_url)" \
     --embedding-model "$EMBED_MODEL" \
-    --embedding-dimensions "$EMBED_DIMS"
+    --embedding-dimensions "$EMBED_DIMS" \
+    --non-interactive
   ok "initialized at $EMBED_DIMS dimensions"
 fi
+
+# Set every run, not just at init: the mode is cheap to write, and a brain that
+# was initialised before this setting existed would otherwise keep whatever the
+# wizard's default was.
+#
+# What it controls is the DOWNSTREAM agent's cost, not gbrain's: the cap and
+# chunk count decide how much retrieved text lands in the agent's context.
+#   conservative  4K cap, 10 chunks
+#   balanced      12K cap, 25 chunks
+#   tokenmax      no cap, 50 chunks, LLM query expansion (needs an expansion key)
+gbrain config set search.mode "${SEARCH_MODE:-balanced}" >/dev/null 2>&1 \
+  && ok "search mode: ${SEARCH_MODE:-balanced}" \
+  || warn "could not set search.mode — check 'gbrain config show'"
 
 # ------------------------------------------------------------- sources ----
 
@@ -339,7 +387,22 @@ if [[ -f "$SPARSE" ]]; then
     # calls silently resurrects everything from the first batch.
     rules=("/*")
     while IFS= read -r path; do
-      [[ -n "$path" ]] && rules+=("!/$path")
+      [[ -z "$path" ]] && continue
+      # gitignore semantics, and the distinction matters more than it looks.
+      # A pattern with a slash is a PLACE — anchor it at the repo root, so
+      # `audit/reports` excludes exactly that directory. A bare filename is a
+      # KIND — leave it unanchored so it matches at every depth.
+      #
+      # Anchoring everything, which this used to do, silently let nested copies
+      # through: `package-lock.json` became `!/package-lock.json` and matched
+      # only the root one, while `scripts/package-lock.json` and
+      # `admin-panel/package-lock.json` sailed into the index. Beyond the noise,
+      # dense generated JSON is what crashes a local embedding runner.
+      if [[ "$path" == */* ]]; then
+        rules+=("!/$path")
+      else
+        rules+=("!$path")
+      fi
     done < <(sparse_paths_for "$id")
     git -C "$clone" sparse-checkout set --no-cone "${rules[@]}"
     dim "$id: $(( ${#rules[@]} - 1 )) exclusion(s)"

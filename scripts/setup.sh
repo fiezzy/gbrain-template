@@ -6,6 +6,9 @@
 #   ./scripts/setup.sh ~/work/api ~/work/web  ...and expose it to Claude Code there
 #   ./scripts/setup.sh --yes                  never ask; for CI and re-runs
 #
+# Directories can also be given at the end of the run: when none are passed and
+# the run is interactive, it asks which projects to connect the brain to.
+#
 # WHO RUNS WHAT
 #   init.sh   the OWNER, once, on an empty repo. It WRITES brain.conf.
 #   setup.sh  EVERYONE ELSE, on a repo that already carries brain.conf.
@@ -325,6 +328,50 @@ if (( DO_INDEX )); then
 fi
 
 # ------------------------------------------------------------------ mcp ----
+
+# A brain nobody's agent can reach is a brain nobody uses, and the person most
+# likely to stop here is the one who has never seen this repo before. So when no
+# directory was passed, ask — rather than printing a next step and exiting.
+#
+# Skipped without a prompt when: dirs came in as arguments, the run is
+# unattended, or Claude Code is not installed (the registration would fail and
+# the question would be noise).
+if (( ${#MCP_DIRS[@]} == 0 )) && (( ASSUME_YES == 0 )) && [[ -t 0 ]] \
+   && command -v claude >/dev/null 2>&1; then
+  echo
+  log "Connect this brain to your projects"
+  cat <<'TXT'
+    Registering a directory lets Claude Code search this brain while you work
+    there. It is per-directory on purpose — nothing leaks into other projects.
+
+    Give the directories you actually code in, separated by spaces.
+    Empty just skips it; ./scripts/register-mcp.sh <dir>... does the same later.
+TXT
+
+  # The brain usually lives inside the workspace it describes, so the parent is
+  # a better first guess than nothing. Only offered when it looks like a real
+  # working directory rather than $HOME or a bare container.
+  suggestion=""
+  parent="$(dirname "$BRAIN_DIR")"
+  if [[ "$parent" != "$HOME" && "$parent" != "/" && -d "$parent" ]]; then
+    suggestion="$parent"
+    info "suggestion: $suggestion"
+  fi
+
+  read -r -p "    Directories [${suggestion}]: " reply || reply=""
+  reply="${reply:-$suggestion}"
+
+  for dir in $reply; do
+    # Expand a leading ~ by hand: this arrives as literal text from `read`,
+    # so the shell never gets the chance to do it.
+    [[ "$dir" == "~"* ]] && dir="${HOME}${dir#\~}"
+    if [[ -d "$dir" ]]; then
+      MCP_DIRS+=("$dir")
+    else
+      warn "not a directory, skipping: $dir"
+    fi
+  done
+fi
 
 if (( ${#MCP_DIRS[@]} )); then
   echo
